@@ -1,0 +1,253 @@
+
+
+==================== PART 1.2 — develop (question qua query) ====================
+
+$ curl -s -X POST "http://localhost:8000/ask?question=Hello"; echo
+{"answer":"Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé."}
+
+$ curl -s -o /dev/null -w "GET /health -> %{http_code}
+" http://localhost:8000/health
+GET /health -> 404
+
+-- log server develop (thấy print lộ API key):
+[DEBUG] Got question: Hello
+[DEBUG] Using key: sk-hardcoded-fake-key-never-do-this
+[DEBUG] Response: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé.
+INFO:     127.0.0.1:51942 - "POST /ask?question=Hello HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51954 - "GET /health HTTP/1.1" 404 Not Found
+
+
+==================== PART 1.3 — production (12-factor) ====================
+
+$ curl -s http://localhost:8000/health; echo
+{"status":"ok","uptime_seconds":0.6,"version":"1.0.0","environment":"development","timestamp":"2026-11-25T09:55:24.543309+00:00"}
+
+$ curl -s http://localhost:8000/ready; echo
+{"ready":true}
+
+$ curl -s -X POST http://localhost:8000/ask -H 'Content-Type: application/json' -d '{"question": "Hello"}'; echo
+{"question":"Hello","answer":"Đây là câu trả lời từ AI agent (mock). Trong production, đây sẽ là response từ OpenAI/Anthropic.","model":"gpt-4o-mini"}
+
+-- log server production (JSON, không có secret):
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:39852 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39868 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39870 - "GET /ready HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39878 - "POST /ask HTTP/1.1" 200 OK
+
+
+==================== PART 2.2 — build + run image develop ====================
+
+$ docker build -q -f 02-docker/develop/Dockerfile -t my-agent:develop .
+sha256:ac3bf49c21365f938493a4d0e4ce52bfab6faccfd21c54c210df163b0e2391a7
+
+$ docker run -d --rm --name p2dev -p 8000:8000 my-agent:develop
+c1b01cda40bf287066d82f2b58d9c1274368158edd144b2267d0597f2b9045e5
+
+$ curl -s -X POST "http://localhost:8000/ask?question=What%20is%20Docker"; echo
+{"answer":"Container là cách đóng gói app để chạy ở mọi nơi. Build once, run anywhere!"}
+
+
+==================== PART 2.3 — build image production (multi-stage) + so sánh kích thước ====================
+
+$ docker build -q -f 02-docker/production/Dockerfile -t my-agent:advanced .
+sha256:8d8e7d9d86a3d2a7807d358f75bb7923625d841050a38ee45835ac50f2fc3ebd
+
+$ docker images my-agent --format "table {{.Repository}}:{{.Tag}}	{{.Size}}"
+REPOSITORY:TAG      SIZE
+my-agent:advanced   240MB
+my-agent:develop    1.67GB
+
+$ docker image inspect -f "{{.RepoTags}} {{.Size}}" my-agent:develop my-agent:advanced | awk "{printf \"%s %.0f MB
+\", \$1, \$2/1024/1024}"
+[my-agent:develop] 407 MB
+[my-agent:advanced] 55 MB
+
+
+==================== PART 2.4 — Docker Compose stack (nginx + agent + redis + qdrant) ====================
+
+$ cd 02-docker/production && docker compose -p k5-day14-docker up -d --build 2>&1 | tail -n 8
+ Container k5-day14-docker-redis-1 Waiting 
+ Container k5-day14-docker-qdrant-1 Waiting 
+ Container k5-day14-docker-qdrant-1 Healthy 
+ Container k5-day14-docker-redis-1 Healthy 
+ Container k5-day14-docker-agent-1 Starting 
+ Container k5-day14-docker-agent-1 Started 
+ Container k5-day14-docker-nginx-1 Starting 
+ Container k5-day14-docker-nginx-1 Started 
+
+$ cd 02-docker/production && docker compose -p k5-day14-docker ps --format "table {{.Service}}	{{.State}}	{{.Ports}}"
+SERVICE   STATE     PORTS
+agent     running   8000/tcp
+nginx     running   0.0.0.0:80->80/tcp, [::]:80->80/tcp, 0.0.0.0:443->443/tcp, [::]:443->443/tcp
+qdrant    running   6333-6334/tcp
+redis     running   6379/tcp
+
+$ curl -s http://localhost/health; echo
+{"status":"ok","uptime_seconds":7.2,"version":"2.0.0","timestamp":"2026-11-25T09:59:15.154409"}
+
+$ curl -s -X POST http://localhost/ask -H 'Content-Type: application/json' -d '{"question": "Explain microservices"}'; echo
+{"answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận."}
+
+$ cd 02-docker/production && docker compose -p k5-day14-docker down >/dev/null 2>&1; echo "stack down"
+stack down
+
+
+==================== PART 4.1 — API key (develop) ====================
+
+$ curl -s -i -X POST http://localhost:8000/ask -H 'Content-Type: application/json' -d '{"question": "Hello"}' | grep -E '^HTTP|detail'
+HTTP/1.1 401 Unauthorized
+{"detail":"Missing API key. Include header: X-API-Key: <your-key>"}
+
+$ curl -s -i -X POST http://localhost:8000/ask -H 'X-API-Key: wrong-key' -H 'Content-Type: application/json' -d '{"question": "Hello"}' | grep -E '^HTTP|detail'
+HTTP/1.1 403 Forbidden
+{"detail":"Invalid API key."}
+
+$ curl -s -i -X POST http://localhost:8000/ask -H 'X-API-Key: secret-key-123' -H 'Content-Type: application/json' -d '{"question": "Hello"}' | grep -E '^HTTP|answer'
+HTTP/1.1 200 OK
+{"question":"Hello","answer":"Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé."}
+
+
+==================== PART 4.2–4.3 — JWT + rate limit (production) ====================
+
+$ curl -X POST /auth/token -d '{"username":"student","password":"demo123"}'
+{"access_token":"eyJ…<đã che>","token_type":"bearer","expires_in_minutes":60,"hint":"Include in header: Authorization: Bearer eyJ…<đã che>"}
+
+$ curl -i /ask KHÔNG có token
+HTTP/1.1 401 Unauthorized
+{"detail":"Authentication required. Include: Authorization: Bearer <token>"}
+
+$ curl -i /ask có token (Authorization: Bearer eyJ…<đã che>)
+HTTP/1.1 200 OK
+{"question":"Explain JWT","answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận.","usage":{"requests_remaining":9,"budget_remaining_usd":1.9e-05}}
+
+$ for i in {1..20}; do curl … /ask (Bearer token) …; done
+1: HTTP 200
+2: HTTP 200
+3: HTTP 200
+4: HTTP 200
+5: HTTP 200
+6: HTTP 200
+7: HTTP 200
+8: HTTP 200
+9: HTTP 200
+10: HTTP 429
+11: HTTP 429
+12: HTTP 429
+13: HTTP 429
+14: HTTP 429
+15: HTTP 429
+16: HTTP 429
+17: HTTP 429
+18: HTTP 429
+19: HTTP 429
+20: HTTP 429
+body 429: {"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":59}}
+
+$ curl /me/usage (cost guard — usage của user)
+{"user_id":"student","date":"2026-11-25","requests":10,"input_tokens":40,"output_tokens":292,"cost_usd":0.000181,"budget_usd":1.0,"budget_remaining_usd":0.999819,"budget_used_pct":0.0}
+
+
+==================== PART 5.1–5.2 — health/ready + graceful shutdown (develop) ====================
+
+$ curl -s http://localhost:8000/health; echo
+{"status":"ok","uptime_seconds":0.7,"version":"1.0.0","environment":"development","timestamp":"2026-11-25T09:59:32.449375+00:00","checks":{"memory":{"status":"ok","used_percent":8.8}}}
+
+$ curl -s http://localhost:8000/ready; echo
+{"ready":true,"in_flight_requests":1}
+
+$ curl -X POST '/ask?question=Long task' &  rồi ngay lập tức kill -TERM <pid>
+{"answer":"Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé."}
+[request in-flight -> HTTP 200]
+[server exit code: 0]
+
+-- log server khi tắt:
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Waiting for application shutdown.
+2026-11-25 16:59:35,643 INFO 🔄 Graceful shutdown initiated...
+2026-11-25 16:59:35,643 INFO ✅ Shutdown complete
+INFO:     Application shutdown complete.
+2026-11-25 16:59:35,643 INFO Received signal 15 — uvicorn will handle graceful shutdown
+
+
+==================== PART 5.4–5.5 — 3 instance + Nginx + Redis, test stateless ====================
+
+$ cd 05-scaling-reliability/production && docker compose -p k5-day14-scaling up -d --build --scale agent=3 2>&1 | tail -n 8
+ Container k5-day14-scaling-agent-1 Starting 
+ Container k5-day14-scaling-agent-1 Started 
+ Container k5-day14-scaling-agent-3 Starting 
+ Container k5-day14-scaling-agent-3 Started 
+ Container k5-day14-scaling-agent-2 Starting 
+ Container k5-day14-scaling-agent-2 Started 
+ Container k5-day14-scaling-nginx-1 Starting 
+ Container k5-day14-scaling-nginx-1 Started 
+
+$ cd 05-scaling-reliability/production && docker compose -p k5-day14-scaling ps --format "table {{.Name}}	{{.State}}"
+NAME                       STATE
+k5-day14-scaling-agent-1   running
+k5-day14-scaling-agent-2   running
+k5-day14-scaling-agent-3   running
+k5-day14-scaling-nginx-1   running
+k5-day14-scaling-redis-1   running
+
+$ cd 05-scaling-reliability/production && python test_stateless.py
+============================================================
+Stateless Scaling Demo
+============================================================
+
+Session ID: 272e04d1-4053-4b38-b1de-9bcdc5ee6254
+
+Request 1: [instance-49d9ad]
+  Q: What is Docker?
+  A: Container là cách đóng gói app để chạy ở mọi nơi. Build once, run anywhere!...
+
+Request 2: [instance-6dfd00]
+  Q: Why do we need containers?
+  A: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé....
+
+Request 3: [instance-fe196b]
+  Q: What is Kubernetes?
+  A: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé....
+
+Request 4: [instance-49d9ad]
+  Q: How does load balancing work?
+  A: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé....
+
+Request 5: [instance-6dfd00]
+  Q: What is Redis used for?
+  A: Đây là câu trả lời từ AI agent (mock). Trong production, đây sẽ là response từ O...
+
+------------------------------------------------------------
+Total requests: 5
+Instances used: {'instance-fe196b', 'instance-6dfd00', 'instance-49d9ad'}
+✅ All requests served despite different instances!
+
+--- Conversation History ---
+Total messages: 10
+  [user]: What is Docker?...
+  [assistant]: Container là cách đóng gói app để chạy ở mọi nơi. Build once...
+  [user]: Why do we need containers?...
+  [assistant]: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đ...
+  [user]: What is Kubernetes?...
+  [assistant]: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đ...
+  [user]: How does load balancing work?...
+  [assistant]: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đ...
+  [user]: What is Redis used for?...
+  [assistant]: Đây là câu trả lời từ AI agent (mock). Trong production, đây...
+
+✅ Session history preserved across all instances via Redis!
+
+$ for i in 1 2 3 4 5 6; do curl -s -o /dev/null -D - http://localhost:8080/health | grep -i x-served-by; done
+X-Served-By: 172.21.0.4:8000
+X-Served-By: 172.21.0.3:8000
+X-Served-By: 172.21.0.5:8000
+X-Served-By: 172.21.0.4:8000
+X-Served-By: 172.21.0.3:8000
+X-Served-By: 172.21.0.5:8000
+
+$ cd 05-scaling-reliability/production && docker compose -p k5-day14-scaling down >/dev/null 2>&1; echo "stack down"
+stack down
+
+
+✅ Xong. Toàn bộ output: /mnt/d/VinUni/K5-L3A-DAY14-HoangGiaKhiem-2A202603540-Deployment-Benchmark-Observability/evidence/part1_5_output.txt

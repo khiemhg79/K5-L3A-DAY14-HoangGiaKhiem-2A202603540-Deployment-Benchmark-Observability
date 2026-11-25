@@ -21,7 +21,7 @@ env/
 .idea/
 .DS_Store
 
-# Không cần trong image
+# Not needed in the image
 *.md
 benchmark-observability/
 check_production_ready.py

@@ -1,7 +1,6 @@
 # Day 14 Lab — Mission Answers
 
 > **Họ tên:** Hoàng Gia Khiêm · **MSSV:** 2A202603540 · **Lớp:** K5-L3A
-> Các chỗ `⟪ … ⟫` là output phải dán từ lệnh chính mình chạy (xem `HUONG_DAN_CHAY.md`).
 
 ---
 
@@ -25,7 +24,31 @@ cd 01-localhost-vs-production/develop && pip install -r requirements.txt && pyth
 curl -X POST "http://localhost:8000/ask?question=Hello"
 ```
 
-⟪ dán output curl ⟫
+```text
+$ curl -s -X POST "http://localhost:8000/ask?question=Hello"
+{"answer":"Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé."}
+
+$ curl -s -o /dev/null -w "GET /health -> %{http_code}" http://localhost:8000/health
+GET /health -> 404
+
+-- log server develop:
+[DEBUG] Got question: Hello
+[DEBUG] Using key: sk-hardcoded-fake-key-never-do-this      ← secret bị in ra log
+[DEBUG] Response: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé.
+INFO:     127.0.0.1:51942 - "POST /ask?question=Hello HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51954 - "GET /health HTTP/1.1" 404 Not Found
+```
+
+Bản production (Exercise 1.3) chạy cùng cách:
+
+```text
+$ curl -s http://localhost:8000/health
+{"status":"ok","uptime_seconds":0.6,"version":"1.0.0","environment":"development","timestamp":"2026-11-25T09:55:24.543309+00:00"}
+$ curl -s http://localhost:8000/ready
+{"ready":true}
+$ curl -s -X POST http://localhost:8000/ask -H 'Content-Type: application/json' -d '{"question": "Hello"}'
+{"question":"Hello","answer":"Đây là câu trả lời từ AI agent (mock). Trong production, đây sẽ là response từ OpenAI/Anthropic.","model":"gpt-4o-mini"}
+```
 
 Nó chạy được, nhưng chưa production-ready vì 8 vấn đề ở trên (đặc biệt là secret trong code và không có health check).
 
@@ -61,7 +84,12 @@ docker run --rm -p 8000:8000 my-agent:develop
 curl -X POST "http://localhost:8000/ask?question=What%20is%20Docker"
 ```
 
-⟪ dán output curl ⟫
+```text
+$ docker run -d --rm --name p2dev -p 8000:8000 my-agent:develop
+c1b01cda40bf...
+$ curl -s -X POST "http://localhost:8000/ask?question=What%20is%20Docker"
+{"answer":"Container là cách đóng gói app để chạy ở mọi nơi. Build once, run anywhere!"}
+```
 
 ### Exercise 2.3: Multi-stage build (`02-docker/production/Dockerfile`)
 
@@ -74,11 +102,22 @@ docker build -f 02-docker/production/Dockerfile -t my-agent:advanced .
 docker images | grep my-agent
 ```
 
-⟪ dán output `docker images` ⟫
+```text
+$ docker images my-agent
+REPOSITORY:TAG      SIZE
+my-agent:advanced   240MB
+my-agent:develop    1.67GB
 
-- Develop: **⟪ X ⟫ MB**
-- Production: **⟪ Y ⟫ MB**
-- Chênh lệch: **⟪ (X−Y)/X×100 ⟫ %** nhỏ hơn
+$ docker image inspect -f "{{.RepoTags}} {{.Size}}" my-agent:develop my-agent:advanced   (đổi ra MB)
+[my-agent:develop] 407 MB
+[my-agent:advanced] 55 MB
+```
+
+- Develop: **1.67 GB ≈ 1670 MB** (`docker images`)
+- Production: **240 MB** (`docker images`)
+- Chênh lệch: **(1670 − 240) / 1670 ≈ 85,6 %** nhỏ hơn (image production nhỏ khoảng 7 lần)
+
+`docker images` hiển thị dung lượng trên đĩa sau khi giải nén. `docker image inspect` (Docker Desktop dùng containerd snapshotter) cho dung lượng nén của các layer: 407 MB so với 55 MB, tức nhỏ hơn khoảng 86,5 %. Hai cách đo cho cùng kết luận: multi-stage + `slim` giảm khoảng 85 % dung lượng.
 
 ### Exercise 2.4: Docker Compose stack
 
@@ -108,7 +147,22 @@ curl -X POST http://localhost/ask -H "Content-Type: application/json" -d '{"ques
 docker compose -p k5-day14-docker down
 ```
 
-⟪ dán output ⟫
+```text
+$ docker compose -p k5-day14-docker ps
+SERVICE   STATE     PORTS
+agent     running   8000/tcp
+nginx     running   0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp
+qdrant    running   6333-6334/tcp
+redis     running   6379/tcp
+
+$ curl -s http://localhost/health
+{"status":"ok","uptime_seconds":7.2,"version":"2.0.0","timestamp":"2026-11-25T09:59:15.154409"}
+
+$ curl -s -X POST http://localhost/ask -H 'Content-Type: application/json' -d '{"question": "Explain microservices"}'
+{"answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận."}
+```
+
+Chỉ `nginx` mở cổng ra host (80/443). `agent`, `redis`, `qdrant` chỉ expose cổng trong network nội bộ, nên request từ ngoài phải đi qua Nginx. Redis và Qdrant ở trạng thái `Healthy` trước khi agent được start (`depends_on: condition: service_healthy`).
 
 ---
 
@@ -116,18 +170,21 @@ docker compose -p k5-day14-docker down
 
 ### Exercise 3.1 / 3.2: Deploy agent Part 6
 
-- Nền tảng chính: **⟪ Railway / Render ⟫**
-- URL: **⟪ https://… ⟫** (chi tiết trong `DEPLOYMENT.md`)
+- Nền tảng chính: **Railway** (project gồm service `agent` build từ Dockerfile + service `Redis`)
+- URL: **https://agent-production-d3565445.up.railway.app** (chi tiết trong `DEPLOYMENT.md`)
+- `python check_production_ready.py --public-url …` → `✅ Public URL: GET …/health → 200`
 - Ảnh: `screenshots/dashboard.png`, `screenshots/running.png`, `screenshots/test.png`
 
 Kết quả 4 lệnh tự kiểm (CP6):
 
 ```
-⟪ 200
-200
-401
-200 ⟫
+$ curl …/health                         → 200
+$ curl …/ready                          → 200
+$ curl -X POST …/ask (không có key)      → 401
+$ curl -X POST …/ask -H "X-API-Key: …"   → 200
 ```
+
+Rate limit trên cloud (10 req/phút): 9 request đầu trả 200, request 10–12 trả **429**. Request trước vòng lặp đã tính 1/10.
 
 ### So sánh `railway.toml` và `render.yaml` (06-lab-complete)
 
@@ -167,7 +224,19 @@ curl -i -X POST http://localhost:8000/ask -H "Content-Type: application/json" -d
 curl -i -X POST http://localhost:8000/ask -H "X-API-Key: secret-key-123" -H "Content-Type: application/json" -d '{"question": "Hello"}'
 ```
 
-⟪ dán output: HTTP/1.1 401 … và HTTP/1.1 200 … ⟫
+```text
+$ curl -i -X POST /ask  (không có key)
+HTTP/1.1 401 Unauthorized
+{"detail":"Missing API key. Include header: X-API-Key: <your-key>"}
+
+$ curl -i -X POST /ask -H 'X-API-Key: wrong-key'
+HTTP/1.1 403 Forbidden
+{"detail":"Invalid API key."}
+
+$ curl -i -X POST /ask -H 'X-API-Key: secret-key-123'
+HTTP/1.1 200 OK
+{"question":"Hello","answer":"Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé."}
+```
 
 ### Exercise 4.2: JWT (`04-api-gateway/production`)
 
@@ -177,7 +246,18 @@ Flow: `POST /auth/token` (username/password) → server ký JWT HS256 chứa `su
 curl -s -X POST http://localhost:8000/auth/token -H "Content-Type: application/json" -d '{"username":"student","password":"demo123"}'
 ```
 
-⟪ dán output, che token: "eyJhbGciOi…<đã che>" ⟫
+```text
+$ curl -X POST /auth/token -d '{"username":"student","password":"demo123"}'
+{"access_token":"eyJ…<đã che>","token_type":"bearer","expires_in_minutes":60,"hint":"Include in header: Authorization: Bearer eyJ…<đã che>"}
+
+$ curl -i -X POST /ask   (không có token)
+HTTP/1.1 401 Unauthorized
+{"detail":"Authentication required. Include: Authorization: Bearer <token>"}
+
+$ curl -i -X POST /ask -H "Authorization: Bearer eyJ…<đã che>" -d '{"question":"Explain JWT"}'
+HTTP/1.1 200 OK
+{"question":"Explain JWT","answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận.","usage":{"requests_remaining":9,"budget_remaining_usd":1.9e-05}}
+```
 
 ### Exercise 4.3: Rate limiting
 
@@ -191,7 +271,27 @@ for i in {1..20}; do curl -s -o /dev/null -w "$i: %{http_code}\n" -X POST http:/
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"question\": \"Test $i\"}"; done
 ```
 
-⟪ dán output: 1–10 → 200, 11–20 → 429 ⟫
+```text
+1: HTTP 200
+2: HTTP 200
+3: HTTP 200
+4: HTTP 200
+5: HTTP 200
+6: HTTP 200
+7: HTTP 200
+8: HTTP 200
+9: HTTP 200
+10: HTTP 429
+11–20: HTTP 429
+body 429: {"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":59}}
+```
+
+Lần thứ 10 trong vòng lặp đã bị 429 vì request "Explain JWT" ngay trước đó cũng dùng token này, nên đã tính là 1/10 trong cùng cửa sổ 60 giây. Response 429 kèm `retry_after_seconds` (và header `Retry-After`). Cost guard của bản này theo dõi usage từng user:
+
+```text
+$ curl /me/usage -H "Authorization: Bearer eyJ…<đã che>"
+{"user_id":"student","date":"2026-11-25","requests":10,"input_tokens":40,"output_tokens":292,"cost_usd":0.000181,"budget_usd":1.0,"budget_remaining_usd":0.999819,"budget_used_pct":0.0}
+```
 
 ### Exercise 4.4: Cost guard
 
@@ -209,7 +309,13 @@ Cách làm trong Part 6 (`06-lab-complete/app/cost_guard.py`):
 ### Exercise 5.1: Health checks
 `05-scaling-reliability/develop/app.py`: `/health` (liveness) trả 200 + uptime, memory (psutil) khi process còn sống; `/ready` (readiness) trả 503 khi `_is_ready=False` (đang khởi động/đang tắt). Khác biệt: liveness fail → platform **restart** container; readiness fail → LB **ngừng gửi traffic** nhưng không restart. Vì vậy `/health` không được phụ thuộc Redis (Redis chết mà restart agent cũng vô ích), còn `/ready` thì có.
 
-⟪ dán output `curl localhost:8000/health` và `/ready` ⟫
+```text
+$ curl -s http://localhost:8000/health
+{"status":"ok","uptime_seconds":0.7,"version":"1.0.0","environment":"development","timestamp":"2026-11-25T09:59:32.449375+00:00","checks":{"memory":{"status":"ok","used_percent":8.8}}}
+
+$ curl -s http://localhost:8000/ready
+{"ready":true,"in_flight_requests":1}
+```
 
 ### Exercise 5.2: Graceful shutdown
 Middleware đếm `_in_flight_requests`; khi SIGTERM, uvicorn ngừng nhận kết nối mới, `lifespan` đặt `_is_ready=False` và chờ in-flight về 0 (tối đa timeout) rồi thoát. Handler SIGTERM tự viết chỉ log và **để uvicorn tự xử lý** — nếu nuốt mất handler của uvicorn thì process không bao giờ tắt.
@@ -219,7 +325,21 @@ python app.py & PID=$!; sleep 2
 curl -X POST "http://localhost:8000/ask?question=Long%20task" & sleep 0.2; kill -TERM $PID; wait
 ```
 
-⟪ dán output: request vẫn trả 200, log "Waiting for 1 in-flight requests…" rồi "Shutdown complete" ⟫
+```text
+$ curl -X POST '/ask?question=Long task' &  rồi ngay lập tức kill -TERM <pid>
+{"answer":"Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé."}
+[request in-flight -> HTTP 200]
+[server exit code: 0]
+
+-- log server khi tắt:
+INFO:     Waiting for application shutdown.
+2026-11-25 16:59:35,643 INFO 🔄 Graceful shutdown initiated...
+2026-11-25 16:59:35,643 INFO ✅ Shutdown complete
+INFO:     Application shutdown complete.
+2026-11-25 16:59:35,643 INFO Received signal 15 — uvicorn will handle graceful shutdown
+```
+
+Request đang chạy lúc nhận SIGTERM vẫn trả **200**, và process tự thoát với **exit code 0**. Uvicorn ngừng nhận kết nối mới, chờ request in-flight xong rồi mới chạy phần shutdown của `lifespan`.
 
 ### Exercise 5.3: Stateless design
 `production/app.py` lưu session/history ở Redis (`session:{id}` với `SETEX` TTL 1h) thay vì dict trong RAM. Lý do: khi chạy N instance sau LB, mỗi request có thể rơi vào instance khác; state trong RAM của instance A thì instance B không thấy, và mất hết khi instance restart/scale down.
@@ -240,9 +360,46 @@ python test_stateless.py
 docker compose -p k5-day14-scaling down
 ```
 
-⟪ dán output ⟫
+```text
+$ docker compose -p k5-day14-scaling ps
+k5-day14-scaling-agent-1   running
+k5-day14-scaling-agent-2   running
+k5-day14-scaling-agent-3   running
+k5-day14-scaling-nginx-1   running
+k5-day14-scaling-redis-1   running
 
-Giải thích: 5 câu hỏi cùng `session_id` được phục vụ bởi nhiều instance khác nhau (`Instances used` > 1), nhưng `history` vẫn đủ 10 message (5 user + 5 assistant) vì mọi instance đọc/ghi cùng Redis.
+$ python test_stateless.py
+Session ID: 272e04d1-4053-4b38-b1de-9bcdc5ee6254
+Request 1: [instance-49d9ad]   Q: What is Docker?
+Request 2: [instance-6dfd00]   Q: Why do we need containers?
+Request 3: [instance-fe196b]   Q: What is Kubernetes?
+Request 4: [instance-49d9ad]   Q: How does load balancing work?
+Request 5: [instance-6dfd00]   Q: What is Redis used for?
+------------------------------------------------------------
+Total requests: 5
+Instances used: {'instance-fe196b', 'instance-6dfd00', 'instance-49d9ad'}
+✅ All requests served despite different instances!
+
+--- Conversation History ---
+Total messages: 10
+  [user]: What is Docker?...
+  [assistant]: Container là cách đóng gói app để chạy ở mọi nơi. Build once...
+  ... (5 cặp user/assistant)
+✅ Session history preserved across all instances via Redis!
+
+$ for i in 1..6; do curl -D - http://localhost:8080/health | grep X-Served-By; done
+X-Served-By: 172.21.0.4:8000
+X-Served-By: 172.21.0.3:8000
+X-Served-By: 172.21.0.5:8000
+X-Served-By: 172.21.0.4:8000
+X-Served-By: 172.21.0.3:8000
+X-Served-By: 172.21.0.5:8000
+```
+
+Giải thích:
+- 5 câu hỏi cùng `session_id` được phục vụ luân phiên bởi **cả 3 instance** (`instance-49d9ad` → `6dfd00` → `fe196b` → lặp lại), đúng kiểu round-robin của Nginx. Header `X-Served-By` cũng xoay vòng qua 3 IP `.4 → .3 → .5`.
+- Dù vậy, `history` vẫn đủ **10 message** (5 user + 5 assistant) theo đúng thứ tự, vì không instance nào giữ session trong RAM: mọi instance đọc/ghi cùng key `session:<id>` trong Redis.
+- Nếu lưu history trong dict của từng process, instance B sẽ không thấy câu hỏi mà instance A vừa nhận, và history bị đứt hoặc mất khi một instance restart.
 
 ---
 
@@ -252,9 +409,17 @@ Giải thích: 5 câu hỏi cùng `session_id` được phục vụ bởi nhiề
 cd 06-lab-complete && pip install -r requirements.txt && python check_production_ready.py
 ```
 
-Chạy trong WSL2 (Ubuntu) + Docker Desktop 29.2.1, Python 3.11, Redis: redis-server tạm thời do script tự bật.
+Chạy trong WSL2 (Ubuntu) + Docker Desktop 29.2.1, Python 3.11, Redis: redis-server tạm thời do script tự bật, kèm kiểm tra URL public:
+
+```bash
+python check_production_ready.py --public-url https://agent-production-d3565445.up.railway.app
+```
 
 ```text
+✅ 1. Dockerfile: build 3s, image 63 MB, container GET /health → 200
+✅ 11. Graceful shutdown: SIGTERM → request vẫn 200, exit 0; docker stop exit 0, 0.7s
+✅ 12. Public URL: GET https://agent-production-d3565445.up.railway.app/health → 200
+
 ================================================================
   📋 Checklist Deliverable
      ✅ Dockerfile (multi-stage, < 500 MB)
@@ -270,7 +435,7 @@ Chạy trong WSL2 (Ubuntu) + Docker Desktop 29.2.1, Python 3.11, Redis: redis-se
      ✅ Graceful shutdown
      ✅ Public URL ready (Railway / Render config)
 ----------------------------------------------------------------
-  Result: 12/12 tiêu chí đạt · 43/43 checks passed
+  Result: 12/12 tiêu chí đạt · 44/44 checks passed
   🎉 PASS 12/12 — PRODUCTION READY! Deploy nào!
 ================================================================
 ```
@@ -299,5 +464,7 @@ Tóm tắt cách làm từng tiêu chí:
 | Lần | Hỏi AI gì | Nhận được gì | Mình tự kiểm tra / sửa thế nào |
 |---|---|---|---|
 | 1 | (Claude) Đọc README/CHECKPOINTS/RUBRIC và `check_production_ready.py`, sửa các TODO của Part 6 | Code cho `app/*.py`, Dockerfile, compose, `.dockerignore`, `.env.example`, `railway.toml`, `render.yaml` | Chạy `python check_production_ready.py` trong WSL2 + Docker → PASS 12/12, 43/43 checks (image 63 MB, build 22s, `docker stop` exit 0 trong 0.8s). Lần đầu chạy trên Windows PowerShell/Python 3.14 bị lỗi cài pydantic-core → chuyển sang WSL2 + Python 3.11 theo README. Đọc lại từng file, giải thích được rate limiter sorted set và vì sao /health không gọi Redis |
-| 2 | (Claude) Sửa `KNOWLEDGE_BASE` cho 2 câu v2 sai, viết job CI quality gate, script chạy benchmark | 2 entry mới (JWT/API key, Kubernetes HPA), `.github/workflows/eval-quality-gate.yml`, `run_part7_local.sh`, `make_report_tables.py` | ⟪ Chạy eval: 23/23, 0 regression; kiểm tra keyword mới không trùng câu hỏi khác ⟫ |
-| 3 | (Claude) Gợi ý câu trả lời lý thuyết Part 1–5 | Bản nháp các câu trả lời | ⟪ Tự đối chiếu với code từng thư mục, chạy lệnh và dán output của chính mình ⟫ |
+| 2 | (Claude) Deploy Railway bị lỗi build `exclude-patterns contains non-printable ASCII characters` | Nguyên nhân: comment có ký tự không phải ASCII (tiếng Việt, `──`) trong `.gitignore`/`.dockerignore` của repo; cách sửa: deploy từ bản sao sạch của `06-lab-complete` với `.dockerignore` chỉ ASCII | Deploy lại thành công, log `redis_ok=true`; nhận ra Railway cấp `PORT=8080` nên tạo domain với port 8080; kiểm tra 4 lệnh CP6 và `--public-url` |
+| 3 | (Claude) Part 7 stack: Grafana toàn 'No data', Instances = 0 | Hướng dẫn kiểm tra Prometheus Target health (pool `agent` trống) → `docker compose ps` (agent `Restarting`) → log `ModuleNotFoundError: uvicorn`; nguyên nhân: `pip install --user` vào `/home/agent/.local` nhưng user `agent` có home `/app`; sửa bằng `ENV PYTHONUSERBASE=/home/agent/.local` trong `production/Dockerfile` | Rebuild, agent `healthy`, Prometheus thấy target, dashboard có số; bỏ CSV Locust lần đầu và chạy lại |
+| 3 | (Claude) Sửa `KNOWLEDGE_BASE` cho 2 câu v2 sai, viết job CI quality gate, script chạy benchmark | 2 entry mới (JWT/API key, Kubernetes HPA), `.github/workflows/eval-quality-gate.yml`, `run_part7_local.sh`, `make_report_tables.py` | Chạy `run_part7_local.sh`: eval sau khi sửa 23/23, 0 regression, quality gate ✅ PASS (exit 0); gate v1 vs v2 exit 1. Kiểm tra keyword mới không trùng câu hỏi khác trong golden dataset |
+| 4 | (Claude) Gợi ý câu trả lời lý thuyết Part 1–5 | Bản nháp các câu trả lời | Tự đối chiếu với code từng thư mục; chạy `collect_part1_5.sh` trên máy mình (WSL2 + Docker) và dán output thật vào từng Part (image 1.67 GB vs 240 MB, 401/403/200, 429 ở request thứ 10, stateless qua 3 instance) |

@@ -1,0 +1,66 @@
+==================== 1. Bật stack (1 instance) ====================
+SERVICE      STATE
+agent        running
+grafana      running
+jaeger       running
+locust       running
+nginx        running
+prometheus   running
+
+==================== 1a. Locust headless — 1 instance (2 phút) ====================
+POST     /ask                                                                                  190    200    210    210    220    240   1700   1700   1700   1800   1800   7209
+GET      /health                                                                                 3      3      4      4      5      7     17     34     69     69     69    716
+--------|--------------------------------------------------------------------------------|--------|------|------|------|------|------|------|------|------|------|------|------
+         Aggregated                                                                            190    200    210    210    220    230   1700   1700   1700   1800   1800   7925
+
+Error report
+# occurrences      Error                                                                                               
+------------------|---------------------------------------------------------------------------------------------------------------------------------------------
+83                 POST /ask: HTTPError('503 Server Error: Service Unavailable for url: /ask')                         
+------------------|---------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+==================== 1b. Scale lên 3 instance ====================
+NAME                             STATE
+k5-day14-observability-agent-2   running
+k5-day14-observability-agent-3   running
+k5-day14-observability-agent-4   running
+
+==================== 1c. Locust headless — 3 instance (2 phút) ====================
+POST     /ask                                                                                  190    200    210    210    220    240   1700   1700   1700   1800   1800   7201
+GET      /health                                                                                 3      4      4      4      6     14     49     60     79     79     79    693
+--------|--------------------------------------------------------------------------------|--------|------|------|------|------|------|------|------|------|------|------|------
+         Aggregated                                                                            190    200    210    210    220    230   1700   1700   1700   1800   1800   7894
+
+Error report
+# occurrences      Error                                                                                               
+------------------|---------------------------------------------------------------------------------------------------------------------------------------------
+69                 POST /ask: HTTPError('503 Server Error: Service Unavailable for url: /ask')                         
+------------------|---------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+✅ Đã copy scale_1_stats.csv, scale_3_stats.csv → benchmark-results/
+
+==================== 2. Tải nền 30 user (chạy suốt phần còn lại) ====================
+
+==================== 2b. Trace chậm nhất + trace lỗi (Jaeger API) ====================
+
+==================== 3. Bơm lỗi: MOCK_ERROR_RATE=0.2, MOCK_SLOW_RATE=0.3 ====================
+Thời điểm đổi cấu hình: 17:38:30
+🔥 LLMCostBurnRateHigh FIRING sau 3 giây (17:38:33)
+🔥 AgentHighErrorRate FIRING sau 94 giây (17:40:04)
+🔥 AgentHighLatencyP95 FIRING sau 150 giây (17:41:00)
+
+Trạng thái alert hiện tại:
+ - AgentHighErrorRate firing 2026-11-25T10:38:57.401817116Z
+ - AgentHighLatencyP95 firing 2026-11-25T10:38:52.401817116Z
+ - LLMCostBurnRateHigh firing 2026-11-25T10:25:47.571501534Z
+
+==================== 3b. Trả cấu hình về mặc định ====================
+
+==================== 4. Dọn stack ====================
+
+✅ Xong. Bằng chứng: /mnt/d/VinUni/K5-L3A-DAY14-HoangGiaKhiem-2A202603540-Deployment-Benchmark-Observability/evidence/part7_stack.txt
+   CSV: /mnt/d/VinUni/K5-L3A-DAY14-HoangGiaKhiem-2A202603540-Deployment-Benchmark-Observability/benchmark-results/
